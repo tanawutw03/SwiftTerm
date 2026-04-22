@@ -1271,6 +1271,13 @@ open class Terminal {
             }
 
             if let firstScalar = ch.unicodeScalars.first {
+                // ClaudePad patch: Thai combining marks get their own width-0 cell
+                // instead of merging into the base. This keeps buffer.x in sync with
+                // Claude CLI's wcwidth (which counts combining marks as 1), while
+                // the renderer stacks them visually via advance-based detection.
+                let isThaiCombining = chWidth == 0 &&
+                    firstScalar.value >= 0x0E00 && firstScalar.value <= 0x0E7F
+
                 // Check if we should try to combine this character with the previous one.
                 // This applies to:
                 // 1. Unicode combining characters (diacritics, etc.)
@@ -1278,11 +1285,12 @@ open class Terminal {
                 // 3. Zero Width Joiner (ZWJ) for emoji sequences (e.g., 👩 + ZWJ + 👩 + ZWJ + 👦 = 👩‍👩‍👦)
                 // 4. Variation selectors (e.g., U+FE0F for emoji presentation of ❤️)
                 // 5. Any character following a ZWJ (to complete the sequence)
-                var shouldTryCombine = chWidth == 0 ||
+                var shouldTryCombine = !isThaiCombining && (
+                                       chWidth == 0 ||
                                        firstScalar.properties.canonicalCombiningClass != .notReordered ||
                                        firstScalar.properties.isEmojiModifier ||
                                        firstScalar.properties.isVariationSelector ||
-                                       firstScalar.value == 0x200D  // ZWJ
+                                       firstScalar.value == 0x200D)  // ZWJ
 
                 // Also check if the previous character ends with ZWJ - if so, we should combine
                 if !shouldTryCombine {
@@ -1359,6 +1367,14 @@ open class Terminal {
                 }
             }
             if chWidth == 0 {
+                // ClaudePad patch: Thai combining marks persist in their own width-0
+                // cell so buffer.x advances one per scalar (matching Claude CLI's
+                // wcwidth). Renderer detects and stacks them visually.
+                if let firstScalar = ch.unicodeScalars.first,
+                   firstScalar.value >= 0x0E00 && firstScalar.value <= 0x0E7F {
+                    let charData = makeCharData(attribute: curAttr, char: ch, size: 0)
+                    buffer.insertCharacter(charData)
+                }
                 continue
             }
             // The accessibility stack might not need this

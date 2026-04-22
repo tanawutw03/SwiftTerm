@@ -608,8 +608,20 @@ extension TerminalView {
 
         while col < cols {
             let ch: CharData = line[col]
-            let width = max(1, Int(ch.width))
+            let rawWidth = Int(ch.width)
             let attr = ch.attribute
+
+            // ClaudePad patch: width-0 combining cells (Thai vowels/tones) get
+            // appended to the previous segment's pendingText so CoreText shapes
+            // the cluster and the glyph positioning loop stacks them.
+            if rawWidth == 0 && ch.code != 0 {
+                let character = terminal.getCharacter(for: ch)
+                pendingText.append(character)
+                col += 1
+                continue
+            }
+
+            let width = max(1, rawWidth)
             let hasUrl = shouldUnderlineLink(row: row, column: col, width: width, cell: ch)
             guard let attributes = getAttributes(attr, withUrl: hasUrl) else {
                 flushPending()
@@ -1386,12 +1398,33 @@ extension TerminalView {
                     CTRunGetPositions(run, CFRange(), &coreTextPositions)
 
                     var positions = [CGPoint](repeating: .zero, count: runGlyphsCount)
+                    // ClaudePad patch: detect combining glyphs (Thai vowels/tones,
+                    // diacritics) via their own ~zero horizontal advance. Stack them
+                    // over the last base glyph at CoreText's intra-cluster offset;
+                    // base glyphs advance by segment.columnWidth as usual.
+                    var advances = [CGSize](repeating: .zero, count: runGlyphsCount)
+                    CTRunGetAdvances(run, CFRange(), &advances)
+                    let combiningThreshold = cellDimension.width * 0.3
+                    var lastBaseX: CGFloat = 0
+                    var lastBaseCTX: CGFloat = 0
+                    var baseGlyphCount = 0
                     for i in 0..<runGlyphsCount {
                         let ctPosition = coreTextPositions[i]
-                        let glyphColumn = startColumn + (i * prepared.segment.columnWidth)
-                        positions[i] = CGPoint(
-                            x: lineOrigin.x + CGFloat(glyphColumn) * cellDimension.width,
-                            y: lineOrigin.y + yOffset + ctPosition.y)
+                        let isCombining = i > 0 && advances[i].width < combiningThreshold
+                        if isCombining {
+                            positions[i] = CGPoint(
+                                x: lastBaseX + (ctPosition.x - lastBaseCTX),
+                                y: lineOrigin.y + yOffset + ctPosition.y)
+                        } else {
+                            let glyphColumn = startColumn + (baseGlyphCount * prepared.segment.columnWidth)
+                            let x = lineOrigin.x + CGFloat(glyphColumn) * cellDimension.width
+                            positions[i] = CGPoint(
+                                x: x,
+                                y: lineOrigin.y + yOffset + ctPosition.y)
+                            lastBaseX = x
+                            lastBaseCTX = ctPosition.x
+                            baseGlyphCount += 1
+                        }
                     }
 
                     nativeForegroundColor.set()
